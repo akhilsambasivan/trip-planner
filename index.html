@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Premium Trip Planner</title>
+    <title>AI Trip Planner</title>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -118,6 +118,21 @@
         button:active {
             transform: scale(0.98);
         }
+
+        .loading {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+            animation: pulse 1.5s infinite;
+            margin-right: 8px;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
     </style>
 </head>
 <body>
@@ -126,14 +141,16 @@
     <script type="text/babel">
         const { useState, useEffect } = React;
 
-        function PremiumTripPlanner() {
+        function AITripPlanner() {
+            const [apiKey, setApiKey] = useState('');
+            const [showApiInput, setShowApiInput] = useState(false);
             const [trips, setTrips] = useState([]);
             const [activeTrip, setActiveTrip] = useState(null);
             const [view, setView] = useState('dashboard');
-            const [shareCode, setShareCode] = useState('');
 
             useEffect(() => {
-                const saved = localStorage.getItem('premiumTrips');
+                const saved = localStorage.getItem('aiTrips');
+                const key = localStorage.getItem('openaiKey');
                 if (saved) {
                     try {
                         setTrips(JSON.parse(saved));
@@ -141,40 +158,123 @@
                         console.error('Failed to load trips');
                     }
                 }
+                if (key) setApiKey(key);
             }, []);
 
             useEffect(() => {
-                localStorage.setItem('premiumTrips', JSON.stringify(trips));
+                localStorage.setItem('aiTrips', JSON.stringify(trips));
             }, [trips]);
 
-            const createTrip = (name, dest) => {
-                if (!name.trim() || !dest.trim()) return;
+            const saveApiKey = (key) => {
+                setApiKey(key);
+                localStorage.setItem('openaiKey', key);
+                setShowApiInput(false);
+            };
+
+            const generateItinerary = async (destination, startDate, endDate) => {
+                if (!apiKey) {
+                    alert('Please add your OpenAI API key first');
+                    setShowApiInput(true);
+                    return;
+                }
+
+                const days = Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24)) + 1;
+                const prompt = `Create a detailed ${days}-day travel itinerary for ${destination} from ${startDate} to ${endDate}. 
+Format as JSON with this structure:
+{
+  "itinerary": [
+    {
+      "day": 1,
+      "date": "2024-01-01",
+      "activities": [
+        {"time": "09:00 AM", "activity": "Visit landmark"},
+        {"time": "12:00 PM", "activity": "Lunch at restaurant"},
+        {"time": "03:00 PM", "activity": "Explore museum"}
+      ],
+      "tips": "Wear comfortable shoes"
+    }
+  ],
+  "bestRestaurants": ["Restaurant 1", "Restaurant 2"],
+  "mustSee": ["Landmark 1", "Landmark 2"],
+  "packingTips": ["Item 1", "Item 2"]
+}`;
+
+                try {
+                    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${apiKey}`
+                        },
+                        body: JSON.stringify({
+                            model: 'gpt-3.5-turbo',
+                            messages: [{ role: 'user', content: prompt }],
+                            temperature: 0.7
+                        })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error('API error: ' + response.statusText);
+                    }
+
+                    const data = await response.json();
+                    const content = data.choices[0].message.content;
+                    const jsonMatch = content.match(/\{[\s\S]*\}/);
+                    const itineraryData = JSON.parse(jsonMatch[0]);
+
+                    return itineraryData;
+                } catch (error) {
+                    alert('Error generating itinerary: ' + error.message);
+                    return null;
+                }
+            };
+
+            const createTrip = async (name, destination, startDate, endDate) => {
+                if (!name.trim() || !destination.trim() || !startDate || !endDate) {
+                    alert('Please fill in all fields');
+                    return;
+                }
+
+                if (new Date(endDate) < new Date(startDate)) {
+                    alert('End date must be after start date');
+                    return;
+                }
+
                 const trip = {
                     id: Date.now(),
                     name,
-                    destination: dest,
-                    startDate: '',
-                    endDate: '',
-                    budget: 0,
-                    spent: 0,
-                    currency: 'USD',
-                    notes: '',
+                    destination,
+                    startDate,
+                    endDate,
                     itinerary: [],
-                    packingList: [],
-                    activities: [],
-                    documents: [],
-                    emergencyContacts: [],
                     restaurants: [],
-                    photos: [],
-                    sharedWith: []
+                    mustSee: [],
+                    packingTips: [],
+                    loading: true
                 };
-                setTrips([...trips, trip]);
-            };
 
-            const updateTrip = (updates) => {
-                const updated = trips.map(t => t.id === activeTrip.id ? { ...t, ...updates } : t);
-                setTrips(updated);
-                setActiveTrip({ ...activeTrip, ...updates });
+                setTrips([...trips, trip]);
+                setActiveTrip(trip);
+                setView('overview');
+
+                const itineraryData = await generateItinerary(destination, startDate, endDate);
+                
+                if (itineraryData) {
+                    const updatedTrip = {
+                        ...trip,
+                        itinerary: itineraryData.itinerary || [],
+                        restaurants: itineraryData.bestRestaurants || [],
+                        mustSee: itineraryData.mustSee || [],
+                        packingTips: itineraryData.packingTips || [],
+                        loading: false
+                    };
+                    const updated = trips.map(t => t.id === trip.id ? updatedTrip : t);
+                    setTrips(updated);
+                    setActiveTrip(updatedTrip);
+                } else {
+                    const updated = trips.map(t => t.id === trip.id ? { ...t, loading: false } : t);
+                    setTrips(updated);
+                }
             };
 
             const deleteTrip = (id) => {
@@ -187,83 +287,62 @@
                 }
             };
 
-            const generateShareCode = () => {
-                const code = 'TRIP' + Math.random().toString(36).substring(2, 8).toUpperCase();
-                setShareCode(code);
-                updateTrip({ sharedWith: [...(activeTrip.sharedWith || []), code] });
-            };
-
-            const exportTXT = () => {
-                if (!activeTrip) return;
-                const content = `TRIP: ${activeTrip.name}
-Destination: ${activeTrip.destination}
-Dates: ${activeTrip.startDate} to ${activeTrip.endDate}
-Budget: ${activeTrip.currency} ${activeTrip.budget}
-Spent: ${activeTrip.currency} ${activeTrip.spent}
-
-ITINERARY:
-${activeTrip.itinerary.map(d => `Day ${d.day} (${d.date}): ${d.activities.map(a => a.text).join(', ')}`).join('\n')}
-
-PACKING LIST:
-${activeTrip.packingList.map(p => `${p.packed ? '✓' : '○'} ${p.item}`).join('\n')}
-
-DOCUMENTS:
-${activeTrip.documents.map(d => `${d.verified ? '✓' : '○'} ${d.name}`).join('\n')}
-
-EMERGENCY CONTACTS:
-${activeTrip.emergencyContacts.map(c => `${c.name}: ${c.phone}`).join('\n')}`;
-                const blob = new Blob([content], { type: 'text/plain' });
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `${activeTrip.name.replace(/\s/g, '_')}_trip.txt`;
-                a.click();
-            };
-
-            // Dashboard view
             if (view === 'dashboard' || !activeTrip) {
                 return (
-                    <div style={{ padding: '1rem', maxWidth: '500px', margin: '0 auto' }}>
-                        <div style={{ marginBottom: '1.5rem' }}>
-                            <h1 style={{ fontSize: '24px', fontWeight: '500', margin: '0 0 8px 0' }}>Trip Planner</h1>
-                            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>Plan, organize, and explore your adventures</p>
+                    <div style={{ padding: '1rem', maxWidth: '600px', margin: '0 auto' }}>
+                        <div style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div>
+                                <h1 style={{ fontSize: '24px', fontWeight: '500', margin: '0 0 8px 0' }}>AI Trip Planner</h1>
+                                <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>Intelligent itineraries powered by AI</p>
+                            </div>
+                            <button 
+                                onClick={() => setShowApiInput(!showApiInput)}
+                                style={{ padding: '8px 12px', background: 'var(--surface-1)', border: '0.5px solid var(--border)', borderRadius: 'var(--radius)', fontSize: '12px' }}
+                            >
+                                🔑 API Key
+                            </button>
                         </div>
+
+                        {showApiInput && (
+                            <div style={{ background: 'var(--bg-accent)', borderRadius: '12px', padding: '1rem', marginBottom: '1.5rem' }}>
+                                <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>OpenAI API Key</label>
+                                <input 
+                                    type="password"
+                                    placeholder="sk-..."
+                                    defaultValue={apiKey}
+                                    onBlur={(e) => saveApiKey(e.target.value)}
+                                    style={{ marginBottom: '8px' }}
+                                />
+                                <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>Get your key at <a href="https://platform.openai.com/api-keys" target="_blank" style={{ color: 'var(--text-accent)' }}>platform.openai.com</a></p>
+                            </div>
+                        )}
 
                         {trips.length === 0 ? (
                             <div style={{ background: 'var(--bg-accent)', borderRadius: '12px', padding: '2rem 1rem', textAlign: 'center', marginBottom: '1.5rem' }}>
                                 <p style={{ fontSize: '14px', color: 'var(--text-accent)', marginBottom: '12px' }}>Ready for your next adventure?</p>
-                                <NewTripForm onCreate={(name, dest) => { createTrip(name, dest); }} />
+                                <NewTripForm onCreate={createTrip} />
                             </div>
                         ) : (
                             <div style={{ display: 'grid', gap: '12px', marginBottom: '1.5rem' }}>
                                 {trips.map(trip => {
-                                    const days = trip.endDate && trip.startDate ? Math.ceil((new Date(trip.endDate) - new Date(trip.startDate)) / (1000 * 60 * 60 * 24)) : 0;
-                                    const remaining = trip.budget - trip.spent;
+                                    const days = Math.ceil((new Date(trip.endDate) - new Date(trip.startDate)) / (1000 * 60 * 60 * 24)) + 1;
                                     return (
                                         <div 
                                             key={trip.id}
                                             onClick={() => { setActiveTrip(trip); setView('overview'); }}
-                                            style={{ background: 'var(--surface-1)', borderRadius: '12px', padding: '1rem', border: '0.5px solid var(--border)', cursor: 'pointer', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}
+                                            style={{ background: 'var(--surface-1)', borderRadius: '12px', padding: '1rem', border: '0.5px solid var(--border)', cursor: 'pointer', display: 'grid', gridTemplateColumns: '1fr auto', gap: '1rem', alignItems: 'start' }}
                                         >
                                             <div>
                                                 <h3 style={{ fontSize: '15px', fontWeight: '500', margin: '0 0 4px 0' }}>{trip.name}</h3>
                                                 <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>{trip.destination}</p>
-                                                {days > 0 && <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '4px 0 0 0' }}>{days} days</p>}
+                                                <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '4px 0 0 0' }}>{days} days • {trip.itinerary.length > 0 ? '✓ Itinerary ready' : 'Generating...'}</p>
                                             </div>
-                                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', justifyContent: 'space-between' }}>
-                                                {trip.budget > 0 && (
-                                                    <div style={{ textAlign: 'right' }}>
-                                                        <p style={{ fontSize: '13px', fontWeight: '500', color: remaining >= 0 ? 'var(--text-success)' : 'var(--text-danger)', margin: 0 }}>${remaining}</p>
-                                                        <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '2px 0 0 0' }}>remaining</p>
-                                                    </div>
-                                                )}
-                                                <button 
-                                                    onClick={(e) => { e.stopPropagation(); deleteTrip(trip.id); }}
-                                                    style={{ padding: '4px 8px', background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '12px' }}
-                                                >
-                                                    Delete
-                                                </button>
-                                            </div>
+                                            <button 
+                                                onClick={(e) => { e.stopPropagation(); deleteTrip(trip.id); }}
+                                                style={{ padding: '4px 8px', background: 'transparent', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '12px' }}
+                                            >
+                                                Delete
+                                            </button>
                                         </div>
                                     );
                                 })}
@@ -275,9 +354,8 @@ ${activeTrip.emergencyContacts.map(c => `${c.name}: ${c.phone}`).join('\n')}`;
                 );
             }
 
-            // Main trip view
             return (
-                <div style={{ padding: '1rem', maxWidth: '500px', margin: '0 auto' }}>
+                <div style={{ padding: '1rem', maxWidth: '600px', margin: '0 auto' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '1rem' }}>
                         <button 
                             onClick={() => { setView('dashboard'); setActiveTrip(null); }}
@@ -288,82 +366,94 @@ ${activeTrip.emergencyContacts.map(c => `${c.name}: ${c.phone}`).join('\n')}`;
                         <h2 style={{ fontSize: '18px', fontWeight: '500', margin: 0, flex: 1 }}>{activeTrip.name}</h2>
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px', marginBottom: '1.5rem' }}>
-                        {['overview', 'itinerary', 'budget', 'packing', 'docs', 'more'].map(tab => (
-                            <button 
-                                key={tab}
-                                onClick={() => setView(tab)}
-                                style={{
-                                    padding: '8px',
-                                    background: view === tab ? 'var(--fill-accent)' : 'var(--surface-1)',
-                                    color: view === tab ? 'var(--on-accent)' : 'var(--text-primary)',
-                                    border: '0.5px solid ' + (view === tab ? 'transparent' : 'var(--border)'),
-                                    borderRadius: 'var(--radius)',
-                                    cursor: 'pointer',
-                                    fontWeight: '500',
-                                    fontSize: '13px'
-                                }}
-                            >
-                                {tab.charAt(0).toUpperCase() + tab.slice(1)}
-                            </button>
-                        ))}
-                    </div>
+                    {activeTrip.loading ? (
+                        <div style={{ textAlign: 'center', padding: '2rem' }}>
+                            <p style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>
+                                <span className="loading"></span>Generating your perfect itinerary...
+                            </p>
+                        </div>
+                    ) : (
+                        <div style={{ display: 'grid', gap: '1.5rem' }}>
+                            <div>
+                                <h3 style={{ fontSize: '14px', fontWeight: '500', marginBottom: '12px' }}>Your Itinerary</h3>
+                                <div style={{ display: 'grid', gap: '12px' }}>
+                                    {activeTrip.itinerary?.map((day, idx) => (
+                                        <div key={idx} style={{ background: 'var(--surface-1)', borderRadius: '12px', padding: '12px', border: '0.5px solid var(--border)' }}>
+                                            <h4 style={{ fontSize: '13px', fontWeight: '500', margin: '0 0 8px 0' }}>Day {day.day} - {day.date}</h4>
+                                            {day.activities?.map((act, aidx) => (
+                                                <div key={aidx} style={{ fontSize: '12px', marginBottom: '6px', paddingLeft: '12px', borderLeft: '2px solid var(--fill-accent)' }}>
+                                                    <p style={{ fontWeight: '500', margin: '0 0 2px 0', color: 'var(--text-accent)' }}>{act.time}</p>
+                                                    <p style={{ margin: 0, color: 'var(--text-primary)' }}>{act.activity}</p>
+                                                </div>
+                                            ))}
+                                            {day.tips && <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px', fontStyle: 'italic', margin: 0 }}>💡 {day.tips}</p>}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
 
-                    {view === 'overview' && (
-                        <div style={{ display: 'grid', gap: '1rem' }}>
-                            <div>
-                                <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Destination</label>
-                                <input 
-                                    type="text"
-                                    value={activeTrip.destination}
-                                    onChange={(e) => updateTrip({ destination: e.target.value })}
-                                />
-                            </div>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                            {activeTrip.mustSee?.length > 0 && (
                                 <div>
-                                    <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Start</label>
-                                    <input type="date" value={activeTrip.startDate} onChange={(e) => updateTrip({ startDate: e.target.value })} />
+                                    <h3 style={{ fontSize: '14px', fontWeight: '500', marginBottom: '8px' }}>Must See</h3>
+                                    <div style={{ display: 'grid', gap: '6px' }}>
+                                        {activeTrip.mustSee.map((place, idx) => (
+                                            <div key={idx} style={{ background: 'var(--bg-success)', padding: '8px 12px', borderRadius: 'var(--radius)', fontSize: '12px' }}>
+                                                ⭐ {place}
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
+                            )}
+
+                            {activeTrip.restaurants?.length > 0 && (
                                 <div>
-                                    <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>End</label>
-                                    <input type="date" value={activeTrip.endDate} onChange={(e) => updateTrip({ endDate: e.target.value })} />
+                                    <h3 style={{ fontSize: '14px', fontWeight: '500', marginBottom: '8px' }}>Recommended Restaurants</h3>
+                                    <div style={{ display: 'grid', gap: '6px' }}>
+                                        {activeTrip.restaurants.map((rest, idx) => (
+                                            <div key={idx} style={{ background: 'var(--bg-accent)', padding: '8px 12px', borderRadius: 'var(--radius)', fontSize: '12px' }}>
+                                                🍽️ {rest}
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
-                            </div>
-                            <div>
-                                <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Trip notes</label>
-                                <textarea value={activeTrip.notes} onChange={(e) => updateTrip({ notes: e.target.value })} style={{ minHeight: '80px' }} />
-                            </div>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                                <button 
-                                    onClick={exportTXT}
-                                    style={{ padding: '10px', background: 'var(--fill-accent)', color: 'var(--on-accent)', border: 'none', borderRadius: 'var(--radius)', cursor: 'pointer', fontWeight: '500', fontSize: '13px' }}
-                                >
-                                    Export
-                                </button>
-                                <button 
-                                    onClick={generateShareCode}
-                                    style={{ padding: '10px', background: 'var(--bg-success)', color: 'var(--text-success)', border: '0.5px solid var(--border-success)', borderRadius: 'var(--radius)', cursor: 'pointer', fontWeight: '500', fontSize: '13px' }}
-                                >
-                                    Share
-                                </button>
-                            </div>
-                            {shareCode && <div style={{ background: 'var(--bg-success)', padding: '8px 12px', borderRadius: 'var(--radius)', fontSize: '13px', textAlign: 'center', color: 'var(--text-success)', fontWeight: '500' }}>Share code: {shareCode}</div>}
+                            )}
+
+                            {activeTrip.packingTips?.length > 0 && (
+                                <div>
+                                    <h3 style={{ fontSize: '14px', fontWeight: '500', marginBottom: '8px' }}>Packing Tips</h3>
+                                    <div style={{ display: 'grid', gap: '6px' }}>
+                                        {activeTrip.packingTips.map((tip, idx) => (
+                                            <div key={idx} style={{ background: 'var(--bg-warning)', padding: '8px 12px', borderRadius: 'var(--radius)', fontSize: '12px' }}>
+                                                🎒 {tip}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     )}
-
-                    {view === 'itinerary' && <ItineraryTab trip={activeTrip} onUpdate={updateTrip} />}
-                    {view === 'budget' && <BudgetTab trip={activeTrip} onUpdate={updateTrip} />}
-                    {view === 'packing' && <PackingTab trip={activeTrip} onUpdate={updateTrip} />}
-                    {view === 'docs' && <DocumentsTab trip={activeTrip} onUpdate={updateTrip} />}
-                    {view === 'more' && <MoreTab trip={activeTrip} onUpdate={updateTrip} />}
                 </div>
             );
         }
 
         function NewTripForm({ onCreate }) {
             const [name, setName] = useState('');
-            const [dest, setDest] = useState('');
+            const [destination, setDestination] = useState('');
+            const [startDate, setStartDate] = useState('');
+            const [endDate, setEndDate] = useState('');
             const [open, setOpen] = useState(false);
+            const [loading, setLoading] = useState(false);
+
+            const handleCreate = async () => {
+                setLoading(true);
+                await onCreate(name, destination, startDate, endDate);
+                setName('');
+                setDestination('');
+                setStartDate('');
+                setEndDate('');
+                setOpen(false);
+                setLoading(false);
+            };
 
             if (!open) {
                 return (
@@ -371,21 +461,24 @@ ${activeTrip.emergencyContacts.map(c => `${c.name}: ${c.phone}`).join('\n')}`;
                         onClick={() => setOpen(true)}
                         style={{ width: '100%', padding: '12px', background: 'var(--fill-accent)', color: 'var(--on-accent)', border: 'none', borderRadius: 'var(--radius)', cursor: 'pointer', fontWeight: '500' }}
                     >
-                        + Create new trip
+                        ✨ Create New Trip
                     </button>
                 );
             }
 
             return (
                 <div style={{ background: 'var(--surface-1)', borderRadius: '12px', padding: '1rem', border: '0.5px solid var(--border)', display: 'grid', gap: '8px' }}>
-                    <input placeholder="Trip name" value={name} onChange={(e) => setName(e.target.value)} />
-                    <input placeholder="Destination" value={dest} onChange={(e) => setDest(e.target.value)} />
+                    <input placeholder="Trip name (e.g., Summer Europe)" value={name} onChange={(e) => setName(e.target.value)} />
+                    <input placeholder="Destination (e.g., Paris, France)" value={destination} onChange={(e) => setDestination(e.target.value)} />
+                    <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+                    <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
                         <button 
-                            onClick={() => { onCreate(name, dest); setName(''); setDest(''); setOpen(false); }}
-                            style={{ padding: '8px', background: 'var(--fill-accent)', color: 'var(--on-accent)', border: 'none', borderRadius: 'var(--radius)', cursor: 'pointer', fontSize: '13px', fontWeight: '500' }}
+                            onClick={handleCreate}
+                            disabled={loading}
+                            style={{ padding: '8px', background: 'var(--fill-accent)', color: 'var(--on-accent)', border: 'none', borderRadius: 'var(--radius)', cursor: 'pointer', fontSize: '13px', fontWeight: '500', opacity: loading ? 0.7 : 1 }}
                         >
-                            Create
+                            {loading ? 'Generating...' : 'Create & Generate'}
                         </button>
                         <button 
                             onClick={() => setOpen(false)}
@@ -398,149 +491,7 @@ ${activeTrip.emergencyContacts.map(c => `${c.name}: ${c.phone}`).join('\n')}`;
             );
         }
 
-        function ItineraryTab({ trip, onUpdate }) {
-            const addDay = () => {
-                const day = { day: (trip.itinerary?.length || 0) + 1, date: '', activities: [] };
-                onUpdate({ itinerary: [...(trip.itinerary || []), day] });
-            };
-
-            return (
-                <div>
-                    <div style={{ display: 'grid', gap: '1rem', marginBottom: '1rem' }}>
-                        {trip.itinerary?.map((day, idx) => (
-                            <div key={idx} style={{ background: 'var(--surface-1)', borderRadius: '12px', padding: '12px', border: '0.5px solid var(--border)' }}>
-                                <h4 style={{ fontSize: '13px', fontWeight: '500', margin: '0 0 8px 0' }}>Day {day.day}</h4>
-                                <input type="date" value={day.date} onChange={(e) => { const u = [...trip.itinerary]; u[idx].date = e.target.value; onUpdate({ itinerary: u }); }} style={{ marginBottom: '8px', fontSize: '12px' }} />
-                                {day.activities.map((act, aidx) => (
-                                    <div key={aidx} style={{ display: 'flex', gap: '6px', marginBottom: '6px', fontSize: '12px' }}>
-                                        <input type="text" value={act.text} onChange={(e) => { const u = [...trip.itinerary]; u[idx].activities[aidx].text = e.target.value; onUpdate({ itinerary: u }); }} style={{ flex: 1 }} />
-                                        <button onClick={() => { const u = [...trip.itinerary]; u[idx].activities.splice(aidx, 1); onUpdate({ itinerary: u }); }} style={{ padding: '4px 8px', background: 'var(--fill-danger)', color: 'var(--on-danger)', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px', whiteSpace: 'nowrap' }}>Remove</button>
-                                    </div>
-                                ))}
-                            </div>
-                        ))}
-                    </div>
-                    <button onClick={addDay} style={{ width: '100%', padding: '10px', background: 'var(--fill-accent)', color: 'var(--on-accent)', border: 'none', borderRadius: 'var(--radius)', cursor: 'pointer', fontWeight: '500', fontSize: '13px' }}>+ Add day</button>
-                </div>
-            );
-        }
-
-        function BudgetTab({ trip, onUpdate }) {
-            return (
-                <div style={{ display: 'grid', gap: '1rem' }}>
-                    <div style={{ background: 'var(--bg-accent)', borderRadius: '12px', padding: '1rem', textAlign: 'center' }}>
-                        <p style={{ fontSize: '12px', color: 'var(--text-secondary)', margin: '0 0 4px 0' }}>Remaining budget</p>
-                        <p style={{ fontSize: '24px', fontWeight: '500', margin: 0, color: (trip.budget - trip.spent) >= 0 ? 'var(--text-primary)' : 'var(--text-danger)' }}>${Math.round(trip.budget - trip.spent)}</p>
-                        <p style={{ fontSize: '11px', color: 'var(--text-secondary)', margin: '4px 0 0 0' }}>${Math.round(trip.spent)} of ${Math.round(trip.budget)}</p>
-                    </div>
-                    <div>
-                        <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Total budget</label>
-                        <input type="number" value={trip.budget} onChange={(e) => onUpdate({ budget: parseFloat(e.target.value) || 0 })} />
-                    </div>
-                    <div>
-                        <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Spent so far</label>
-                        <input type="number" value={trip.spent} onChange={(e) => onUpdate({ spent: parseFloat(e.target.value) || 0 })} />
-                    </div>
-                </div>
-            );
-        }
-
-        function PackingTab({ trip, onUpdate }) {
-            const [item, setItem] = useState('');
-            const addItem = () => {
-                if (item.trim()) {
-                    onUpdate({ packingList: [...(trip.packingList || []), { id: Date.now(), item, packed: false }] });
-                    setItem('');
-                }
-            };
-
-            return (
-                <div style={{ display: 'grid', gap: '1rem' }}>
-                    <div style={{ display: 'grid', gap: '6px' }}>
-                        {trip.packingList?.map(p => (
-                            <div key={p.id} style={{ display: 'flex', gap: '8px', alignItems: 'center', padding: '8px', background: 'var(--surface-1)', borderRadius: 'var(--radius)', fontSize: '13px' }}>
-                                <input type="checkbox" checked={p.packed} onChange={() => { const u = trip.packingList.map(x => x.id === p.id ? { ...x, packed: !x.packed } : x); onUpdate({ packingList: u }); }} />
-                                <span style={{ flex: 1, textDecoration: p.packed ? 'line-through' : 'none', color: p.packed ? 'var(--text-secondary)' : 'var(--text-primary)' }}>{p.item}</span>
-                            </div>
-                        ))}
-                    </div>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                        <input type="text" placeholder="Add item..." value={item} onChange={(e) => setItem(e.target.value)} />
-                        <button onClick={addItem} style={{ padding: '8px 16px', background: 'var(--fill-accent)', color: 'var(--on-accent)', border: 'none', borderRadius: 'var(--radius)', cursor: 'pointer', fontSize: '13px', fontWeight: '500', whiteSpace: 'nowrap' }}>Add</button>
-                    </div>
-                </div>
-            );
-        }
-
-        function DocumentsTab({ trip, onUpdate }) {
-            const docs = ['Passport', 'Visa', 'Travel insurance', 'Flight tickets', 'Hotel booking', 'Rental car', 'Travel itinerary'];
-            
-            const addDoc = (name) => {
-                onUpdate({ documents: [...(trip.documents || []), { id: Date.now(), name, verified: false }] });
-            };
-
-            return (
-                <div style={{ display: 'grid', gap: '1rem' }}>
-                    <div>
-                        <label style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px', display: 'block' }}>Quick add</label>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '6px' }}>
-                            {docs.map(d => (
-                                <button key={d} onClick={() => addDoc(d)} style={{ padding: '8px', background: 'var(--surface-1)', border: '0.5px solid var(--border)', borderRadius: 'var(--radius)', cursor: 'pointer', fontSize: '12px', textAlign: 'center' }}>+ {d}</button>
-                            ))}
-                        </div>
-                    </div>
-                    <div>
-                        <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Your documents</label>
-                        {trip.documents?.map(d => (
-                            <div key={d.id} style={{ display: 'flex', gap: '8px', padding: '8px', background: 'var(--surface-1)', borderRadius: 'var(--radius)', marginBottom: '6px', fontSize: '13px', alignItems: 'center' }}>
-                                <input type="checkbox" checked={d.verified} onChange={() => { const u = trip.documents.map(x => x.id === d.id ? { ...x, verified: !x.verified } : x); onUpdate({ documents: u }); }} />
-                                <span style={{ flex: 1 }}>{d.name}</span>
-                                <button onClick={() => { const u = trip.documents.filter(x => x.id !== d.id); onUpdate({ documents: u }); }} style={{ padding: '2px 6px', background: 'var(--fill-danger)', color: 'var(--on-danger)', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '10px' }}>×</button>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            );
-        }
-
-        function MoreTab({ trip, onUpdate }) {
-            const [contact, setContact] = useState({ name: '', phone: '' });
-
-            return (
-                <div style={{ display: 'grid', gap: '1.5rem' }}>
-                    <div>
-                        <h4 style={{ fontSize: '13px', fontWeight: '500', margin: '0 0 8px 0' }}>Emergency contacts</h4>
-                        {trip.emergencyContacts?.map(c => (
-                            <div key={c.id} style={{ display: 'flex', gap: '8px', padding: '8px', background: 'var(--surface-1)', borderRadius: 'var(--radius)', marginBottom: '6px', fontSize: '12px', alignItems: 'center' }}>
-                                <div style={{ flex: 1 }}>
-                                    <p style={{ margin: 0, fontWeight: '500' }}>{c.name}</p>
-                                    <p style={{ margin: 0, color: 'var(--text-secondary)' }}>{c.phone}</p>
-                                </div>
-                                <button onClick={() => { const u = trip.emergencyContacts.filter(x => x.id !== c.id); onUpdate({ emergencyContacts: u }); }} style={{ padding: '2px 6px', background: 'var(--fill-danger)', color: 'var(--on-danger)', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '10px' }}>×</button>
-                            </div>
-                        ))}
-                        <div style={{ display: 'grid', gap: '6px' }}>
-                            <input placeholder="Name" value={contact.name} onChange={(e) => setContact({ ...contact, name: e.target.value })} />
-                            <input placeholder="Phone" value={contact.phone} onChange={(e) => setContact({ ...contact, phone: e.target.value })} />
-                            <button onClick={() => { if (contact.name && contact.phone) { onUpdate({ emergencyContacts: [...(trip.emergencyContacts || []), { id: Date.now(), ...contact }] }); setContact({ name: '', phone: '' }); } }} style={{ padding: '8px', background: 'var(--fill-accent)', color: 'var(--on-accent)', border: 'none', borderRadius: 'var(--radius)', cursor: 'pointer', fontSize: '12px', fontWeight: '500' }}>Add contact</button>
-                        </div>
-                    </div>
-
-                    <div style={{ background: 'var(--bg-warning)', borderRadius: '12px', padding: '1rem', fontSize: '12px', color: 'var(--text-warning)' }}>
-                        <p style={{ margin: '0 0 4px 0', fontWeight: '500' }}>Travel tips</p>
-                        <ul style={{ margin: 0, paddingLeft: '1.2rem', fontSize: '11px' }}>
-                            <li>Check visa requirements 3 months before</li>
-                            <li>Notify your bank of travel dates</li>
-                            <li>Book accommodations early</li>
-                            <li>Get travel insurance</li>
-                            <li>Make hotel reservations</li>
-                        </ul>
-                    </div>
-                </div>
-            );
-        }
-
-        ReactDOM.createRoot(document.getElementById('root')).render(<PremiumTripPlanner />);
+        ReactDOM.createRoot(document.getElementById('root')).render(<AITripPlanner />);
     </script>
 </body>
 </html>
